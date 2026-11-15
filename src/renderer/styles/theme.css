@@ -1,0 +1,168 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 2026-Dark Root & Selection Surfaces */
+::selection {
+  background: #276782dd;
+  color: #ededed;
+}
+
+body {
+  background-color: #121314;
+  color: #bfbfbf;
+}
+
+/* 2026-Dark Overlay Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(135, 136, 137, 0.5) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background-color: transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(135, 136, 137, 0.5);
+  border-radius: 9999px;
+  transition: background 0.15s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(237, 237, 237, 0.8);
+}
+
+/* GitHub Flavored Markdown Styling - 2026-Dark Theme */
+.markdown-body {
+  color: #bfbfbf;
+  line-height: 1.65;
+  font-size: 0.875rem;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  color: #ededed;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid #2A2B2C;
+  padding-bottom: 0.3rem;
+}
+.markdown-body h1 { font-size: 1.25rem; }
+.markdown-body h2 { font-size: 1.125rem; }
+.markdown-body h3 { font-size: 0.875rem; border-bottom: none; }
+.markdown-body p { margin-bottom: 1rem; }
+.markdown-body a { color: #48A0C7; text-decoration: underline; text-underline-offset: 3px; }
+.markdown-body a:hover { color: #3994BC; }
+.markdown-body ul, .markdown-body ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+  list-style-type: disc;
+}
+.markdown-body blockquote {
+  background: #242526;
+  border-left: 2px solid #333536;
+  color: #bfbfbf;
+  padding: 8px 16px;
+  margin-bottom: 1rem;
+  border-radius: 0 4px 4px 0;
+}
+.markdown-body pre {
+  background: #191A1B;
+  border: 1px solid #2A2B2C;
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+.markdown-body code {
+  background: #242526;
+  color: #ededed;
+  border: 1px solid #2A2B2C;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: Consolas, 'Fira Code', monospace;
+  font-size: 0.9em;
+}
+.markdown-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 0.75rem 0;
+  cursor: zoom-in;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+  border: 1px solid transparent;
+}
+.markdown-body img:hover {
+  border-color: #3994BC;
+  transform: scale(1.008);
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid #2A2B2C;
+  padding: 8px 12px;
+  text-align: left;
+}
+.markdown-body th {
+  background: #191A1B;
+  color: #ededed;
+  font-weight: 600;
+}
+.markdown-body tr:nth-child(even) {
+  background: #191A1B50;
+}
+
+/* Precision Motion System */
+@keyframes drawerSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes panelFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-drawer-open {
+  animation: drawerSlideUp 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-tab-switch {
+  animation: panelFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Accessibility: Respect Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

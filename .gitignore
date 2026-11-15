@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Production Builds & Packaging
+dist/
+release/
+win-unpacked/
+*.exe
+*.blockmap
+
+# Environment & Credentials
+.env
+.env.local
+.env.*.local
+
+# Operating System Files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# IDE & Editor Settings
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Agent, LLM & Tooling Internal Artifacts
+.agents/
+.claude/
+.hermes/
+.impeccable/
+.codegraph/
+skills-lock.json
+
+# Logs & Diagnostics
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
