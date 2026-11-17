@@ -85,11 +85,11 @@ app.whenReady().then(() => {
     return { settings, repos };
   });
 
-  // 2. Choose root OSSGitHub folder
+  // 2. Choose root folder
   ipcMain.handle('select-root-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
-      title: 'Select Your OSSGitHub Folder',
+      title: 'Select Your Git Repositories Folder',
     });
     if (result.canceled || result.filePaths.length === 0) return null;
 
@@ -234,7 +234,7 @@ app.whenReady().then(() => {
     return readFileContent(repoPath, relativeFilePath);
   });
 
-  // 12. Repository History Timeline (OSSVault Sync Log + Local Git Commits)
+  // 12. Repository History Timeline (GitCairn Sync Log + Local Git Commits)
   ipcMain.handle('get-repo-history', async (_, { repoName, repoPath, isGitRepo }) => {
     const syncHistory = getRepoSyncHistory(repoName);
     const gitCommits = await getGitCommitHistory(repoPath, isGitRepo, 40);

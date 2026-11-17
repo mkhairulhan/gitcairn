@@ -16,6 +16,21 @@ import {
   Loader2,
   ArrowRight,
 } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 function formatRelativeTime(dateInput) {
   if (!dateInput) return '';
@@ -93,6 +108,7 @@ export default function RepoHistory({ repo, onReposUpdated }) {
   const [loading, setLoading] = useState(false);
   const [viewFilter, setViewFilter] = useState('split');
   const [copiedHash, setCopiedHash] = useState(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     if (!repo || !window.api?.getRepoHistory) return;
@@ -114,13 +130,9 @@ export default function RepoHistory({ repo, onReposUpdated }) {
     fetchHistory();
   }, [fetchHistory, repo?.name, repo?.lastPulled, repo?.syncStatus, repo?.history?.length]);
 
-  const handleClearSyncLog = async () => {
-    if (!repo || syncHistory.length === 0) return;
-    const confirmed = window.confirm(
-      `Clear OSSVault's saved sync timeline for "${repo.name}"?\n(Your Git commit history is untouched.)`
-    );
-    if (!confirmed) return;
-
+  const confirmClearSyncLog = async () => {
+    if (!repo) return;
+    setShowClearConfirm(false);
     const res = await window.api.clearRepoHistory(repo.name);
     if (res?.ok) {
       setSyncHistory([]);
@@ -182,28 +194,37 @@ export default function RepoHistory({ repo, onReposUpdated }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={fetchHistory}
-            disabled={loading}
-            className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] disabled:opacity-50 text-[#ededed] px-2.5 py-1 rounded border border-[#2A2B2C] transition"
-          >
-            {loading ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#48A0C7]" />
-            ) : (
-              <RefreshCw className="w-3.5 h-3.5 text-[#48A0C7]" />
-            )}
-            Refresh
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={fetchHistory}
+                disabled={loading}
+                className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] disabled:opacity-50 text-[#ededed] px-2.5 py-1 rounded border border-[#2A2B2C] transition"
+              >
+                {loading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#48A0C7]" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5 text-[#48A0C7]" />
+                )}
+                Refresh
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Reload recent Git commits and sync log</TooltipContent>
+          </Tooltip>
 
           {syncHistory.length > 0 && (
-            <button
-              onClick={handleClearSyncLog}
-              className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-red-950/60 hover:border-red-800/70 hover:text-red-200 text-[#8C8C8C] px-2.5 py-1 rounded border border-[#2A2B2C] transition"
-              title="Clear saved OSSVault sync events for this repository"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              Clear Sync Log
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setShowClearConfirm(true)}
+                  className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-red-950/60 hover:border-red-800/70 hover:text-red-200 text-[#8C8C8C] px-2.5 py-1 rounded border border-[#2A2B2C] transition"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Clear Sync Log
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Clear saved sync event history (keeps Git commit log)</TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>
@@ -216,13 +237,13 @@ export default function RepoHistory({ repo, onReposUpdated }) {
             : 'grid-cols-1 max-w-4xl mx-auto w-full'
         }`}
       >
-        {/* COLUMN 1: OSSVault Sync & Update Activity */}
+        {/* COLUMN 1: GitCairn Sync & Update Activity */}
         {showSyncCol && (
           <section className="flex flex-col bg-[#191A1B] rounded-lg border border-[#2A2B2C] overflow-hidden h-fit">
             <div className="px-4 py-3 border-b border-[#2A2B2C] flex items-center justify-between bg-[#202122]">
               <div className="flex items-center gap-2 font-semibold text-xs text-[#ededed] uppercase tracking-wider">
                 <History className="w-4 h-4 text-[#48A0C7]" />
-                <span>OSSVault Sync & Update Timeline</span>
+                <span>GitCairn Sync & Update Timeline</span>
               </div>
               <span className="text-[11px] text-[#8C8C8C]">
                 {syncHistory.length} {syncHistory.length === 1 ? 'event' : 'events'}
@@ -379,6 +400,32 @@ export default function RepoHistory({ repo, onReposUpdated }) {
           </section>
         )}
       </div>
+
+      {/* Modern Shadcn Confirm Clear Log Dialog */}
+      <AlertDialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+        <AlertDialogContent className="bg-[#191A1B] border-[#2A2B2C] text-[#ededed] max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-[#ededed] flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-red-400" />
+              Clear Sync Timeline?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-[#8C8C8C] text-xs leading-relaxed">
+              Clear GitCairn's saved sync activity log for <span className="font-semibold text-[#ededed]">{repo.name}</span>? Your Git commits and files are completely untouched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="mt-4 gap-2">
+            <AlertDialogCancel className="bg-[#242526] text-[#ededed] border-[#2A2B2C] hover:bg-[#333536] hover:text-white text-xs h-8">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmClearSyncLog}
+              className="bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800/60 text-xs h-8"
+            >
+              Clear Log
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

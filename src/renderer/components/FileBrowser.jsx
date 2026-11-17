@@ -193,7 +193,7 @@ export default function FileBrowser({ repoPath }) {
                     File is large ({fileData.sizeKB} KB)
                   </p>
                   <p className="text-xs text-[#8C8C8C] mt-1">
-                    Preview is capped at 500 KB to keep OSSVault fast. Click the "VS Code" button above to inspect this file.
+                    Preview is capped at 500 KB to keep GitCairn fast. Open in VS Code to inspect this file.
                   </p>
                 </div>
               ) : fileData?.isBinary ? (

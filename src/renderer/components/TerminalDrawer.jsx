@@ -492,7 +492,7 @@ export default function TerminalDrawer({
             ) : (
               logs.map((log) => (
                 <div key={`detail-${log.id}`} className="leading-relaxed">
-                  <span className="text-[#555555] select-none">PS C:\OSSVault&gt; </span>
+                  <span className="text-[#555555] select-none">PS C:\GitCairn&gt; </span>
                   <span className="text-[#48A0C7] font-semibold">{log.level === 'cmd' ? log.message : `[${log.level.toUpperCase()}] ${log.message}`}</span>
                   {log.repoName && <span className="text-[#8C8C8C] ml-2 font-mono">--path {log.repoName}</span>}
                 </div>
@@ -510,7 +510,7 @@ export default function TerminalDrawer({
               <Terminal className="w-10 h-10 text-[#333536] mb-3" />
               <div className="text-xs text-[#ededed] font-medium mb-1">No Real Terminal Spawned</div>
               <div className="text-[11px] text-[#8C8C8C] max-w-sm mb-4">
-                Launch a live interactive PowerShell terminal directly inside OSSVault.
+                Launch a live interactive PowerShell terminal directly inside GitCairn.
               </div>
               <button
                 type="button"

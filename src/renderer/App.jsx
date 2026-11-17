@@ -1,6 +1,8 @@
 // src/renderer/App.jsx — SECTION A (Top Half: Imports, State & Handlers)
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import {
   FolderOpen,
   RefreshCw,
@@ -25,11 +27,43 @@ import {
   ChevronUp,
   ChevronDown,
   History,
+  MoreVertical,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import FileBrowser from './components/FileBrowser';
 import TerminalDrawer from './components/TerminalDrawer';
 import RepoHistory from './components/RepoHistory';
 import ImageLightbox from './components/ImageLightbox';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 // Helper pause function to respect GitHub rate limits between 5-repo chunks
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,6 +90,8 @@ export default function App() {
   const [showTerminal, setShowTerminal] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState([]);
   const [terminalDrawerHeight, setTerminalDrawerHeight] = useState(240); // default in px
+  const [repoToDelete, setRepoToDelete] = useState(null);
+  const [activeAlert, setActiveAlert] = useState(null); // { type: 'error' | 'warn' | 'info', title: string, message: string }
   const isTerminalDraggingRef = useRef(false);
   const terminalStartYRef = useRef(0);
   const terminalStartHeightRef = useRef(0);
@@ -63,6 +99,37 @@ export default function App() {
 
   // Derived compatibility flag for Clone button
   const isCloning = activeOp === "clone";
+
+  // Search input ref for keyboard shortcut focus
+  const searchInputRef = useRef(null);
+
+  // Global keyboard shortcuts (Ctrl+K: search, Ctrl+`: toggle terminal)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      // Toggle Terminal Drawer: Ctrl+` or Cmd+`
+      if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.code === 'Backquote')) {
+        e.preventDefault();
+        setShowTerminal((prev) => !prev);
+        return;
+      }
+
+      // Focus Search: Ctrl+K or Cmd+K
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      // Unfocus on Escape if in search input
+      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        searchInputRef.current?.blur();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
 
   // Notes & Tags Editor State
   const [tagInput, setTagInput] = useState("");
@@ -202,7 +269,7 @@ export default function App() {
     window.api
       .readReadme(selectedRepo.readmePath, selectedRepo.path)
       .then((md) => Promise.resolve(marked.parse(md || "")))
-      .then((html) => setReadmeHtml(html));
+      .then((html) => setReadmeHtml(DOMPurify.sanitize(html || "")));
   }, [selectedRepo]);
 
   // Collect all unique #tags across all repos
@@ -255,6 +322,15 @@ export default function App() {
       });
   }, [repos, searchQuery, sortBy, selectedTag, checkedRepos]);
 
+  // Virtualized Repo List
+  const repoListParentRef = useRef(null);
+  const rowVirtualizer = useVirtualizer({
+    count: filteredRepos.length,
+    getScrollElement: () => repoListParentRef.current,
+    estimateSize: () => 54,
+    overscan: 5,
+  });
+
   // --- ACTIONS ---
 
   const handleChooseFolder = async () => {
@@ -304,13 +380,25 @@ export default function App() {
         setCloneUrl("");
         setRepos(res.repos);
         appendLog("success", res.message);
+        setActiveAlert(null);
       } else {
-        appendLog("error", res.message || "Clone failed.");
+        const errorMsg = res.message || "Failed to clone repository.";
+        appendLog("error", errorMsg);
+        setActiveAlert({
+          type: "error",
+          title: "Clone Failed",
+          message: errorMsg,
+        });
       }
     } catch (err) {
       const msg = err?.message || "Unexpected error during clone.";
       setBatchProgress({ current: 1, total: 1, log: msg });
       appendLog("error", msg);
+      setActiveAlert({
+        type: "error",
+        title: "Clone Failed",
+        message: msg,
+      });
     } finally {
       setActiveOp(null);
     }
@@ -445,6 +533,16 @@ export default function App() {
         log: summaryText,
       });
       appendLog("success", summaryText);
+
+      if (errorCount > 0) {
+        setActiveAlert({
+          type: "warn",
+          title: `${actionLabel} Completed with Errors`,
+          message: `${errorCount} repository(s) encountered network or permissions issues. Open the terminal drawer below to inspect detailed logs.`,
+        });
+      } else {
+        setActiveAlert(null);
+      }
     } finally {
       setRunningRepos(new Set());
       setActiveOp(null);
@@ -480,11 +578,14 @@ export default function App() {
     handleSaveNotesAndTags(updatedTags, notesInput);
   };
 
-  const handleDeleteRepo = async (repo) => {
-    const confirmed = window.confirm(
-      `Move "${repo.name}" to the Windows Recycle Bin?\n(You can restore it from the Recycle Bin anytime.)`,
-    );
-    if (!confirmed) return;
+  const handleDeleteRepo = (repo) => {
+    setRepoToDelete(repo);
+  };
+
+  const confirmDeleteRepo = async () => {
+    if (!repoToDelete) return;
+    const repo = repoToDelete;
+    setRepoToDelete(null);
     const res = await window.api.deleteRepoToTrash(repo.path);
     setRepos(res.repos);
     setCheckedRepos((prev) => {
@@ -602,40 +703,49 @@ export default function App() {
   // === PART 2.3 STARTS RIGHT BELOW THIS COMMENT (AT `return (`) ===
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#121314] text-[#bfbfbf] select-none overflow-hidden">
+    <div className="flex flex-col h-screen w-screen bg-background text-foreground select-none overflow-hidden">
       {/* NATIVE INTEGRATED TITLEBAR: 38px height, titleBarOverlay with Windows native caption controls */}
       <header
         style={{ WebkitAppRegion: 'drag' }}
-        className="h-[38px] bg-[#191A1B] border-b border-[#2A2B2C] pl-3 pr-[140px] flex items-center justify-between gap-4 shrink-0 select-none z-50"
+        className="h-[38px] bg-card border-b border-border pl-3 pr-[140px] flex items-center justify-between gap-4 shrink-0 select-none z-50"
       >
         {/* Left Section: Branding & Root Folder Picker */}
         <div style={{ WebkitAppRegion: 'no-drag' }} className="flex items-center gap-2.5 shrink-0">
-          <div className="flex items-center gap-2 font-bold text-xs text-[#ededed] tracking-wide">
+          <div className="flex items-center gap-2 font-bold text-xs text-card-foreground tracking-wide">
             <Sparkles className="w-4 h-4 text-[#48A0C7]" />
             <span>GitCairn</span>
           </div>
-          <button
-            onClick={handleChooseFolder}
-            disabled={Boolean(activeOp)}
-            aria-label="Select root folder containing GitHub repositories"
-            title="Choose OSSGitHub root folder"
-            className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC] disabled:opacity-50 disabled:cursor-not-allowed text-[#ededed] px-2.5 py-1 rounded border border-[#2A2B2C] transition"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-[#48A0C7]" />
-            <span className="truncate max-w-[200px]">
-              {rootFolder || "Select OSSGitHub Folder..."}
-            </span>
-          </button>
-          <button
-            onClick={handleRefreshRootFolder}
-            disabled={Boolean(activeOp) || !rootFolder}
-            aria-label="Refresh repository list from root folder"
-            title="Rescan root folder"
-            className="p-1.5 text-[#8C8C8C] hover:text-[#ededed] hover:bg-[#242526] disabled:opacity-40 rounded border border-transparent hover:border-[#2A2B2C] transition shrink-0"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-          <span className="text-[11px] text-[#8C8C8C] bg-[#121314] px-2 py-0.5 rounded border border-[#2A2B2C]">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleChooseFolder}
+                disabled={Boolean(activeOp)}
+                aria-label="Select root folder containing GitHub repositories"
+                className="flex items-center gap-1.5 text-xs bg-secondary hover:bg-[#333536] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC] disabled:opacity-50 disabled:cursor-not-allowed text-card-foreground px-2.5 py-1 rounded border border-border transition"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-[#48A0C7]" />
+                <span className="truncate max-w-[200px]">
+                  {rootFolder || "Select Root Folder..."}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Choose root folder containing Git repositories</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleRefreshRootFolder}
+                disabled={Boolean(activeOp) || !rootFolder}
+                aria-label="Refresh repository list from root folder"
+                className="p-1.5 text-muted-foreground hover:text-card-foreground hover:bg-secondary disabled:opacity-40 rounded border border-transparent hover:border-border transition shrink-0"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Rescan repositories in root folder</TooltipContent>
+          </Tooltip>
+          <span className="text-[11px] text-muted-foreground bg-background px-2 py-0.5 rounded border border-border">
             {repos.length} Repos
           </span>
         </div>
@@ -652,14 +762,14 @@ export default function App() {
             onChange={(e) => setCloneUrl(e.target.value)}
             disabled={Boolean(activeOp)}
             placeholder="Paste public GitHub URL to clone..."
-            className="w-full bg-[#121314] text-xs text-[#ededed] px-2.5 py-1 rounded border border-[#2A2B2C] focus:outline-none focus:border-[#3994BC] disabled:opacity-50"
+            className="w-full bg-background text-xs text-card-foreground px-2.5 py-1 rounded border border-border focus:outline-none focus:border-[#3994BC] disabled:opacity-50"
           />
           <button
             type="submit"
             disabled={Boolean(activeOp) || !cloneUrl.trim()}
             aria-label="Clone repository from entered URL"
             title="Clone repository"
-            className="flex items-center gap-1.5 bg-[#297AA0] hover:bg-[#2B7DA3] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-2.5 py-1 rounded transition shrink-0"
+            className="flex items-center gap-1.5 bg-primary hover:bg-[#2B7DA3] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC] disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-xs font-medium px-2.5 py-1 rounded transition shrink-0"
           >
             {activeOp === "clone" ? (
               <Loader2 className="w-3 h-3 animate-spin" />
@@ -691,7 +801,7 @@ export default function App() {
             className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC] disabled:cursor-not-allowed ${
               activeOp === "check"
                 ? "bg-[#1E3A47] border-[#3994BC] text-[#48A0C7]"
-                : "bg-[#242526] hover:bg-[#333536] text-[#ededed] border-[#2A2B2C] disabled:opacity-50"
+                : "bg-secondary hover:bg-[#333536] text-card-foreground border-border disabled:opacity-50"
             }`}
           >
             {activeOp === "check" && (
@@ -739,28 +849,32 @@ export default function App() {
       </header>
 
       {/* MAIN WORKSPACE: Floating Island Cards with Outer Padding and Gap */}
-      <div className="flex-1 flex flex-col p-2 gap-2 overflow-hidden min-h-0 bg-[#121314]">
+      <div className="flex-1 flex flex-col p-2 gap-2 overflow-hidden min-h-0 bg-background">
         <div className="flex flex-1 gap-2 overflow-hidden min-h-0">
           {/* LEFT SIDEBAR: Rounded Island Panel */}
-          <aside className="w-80 bg-[#191A1B] border border-[#2A2B2C] rounded-lg flex flex-col shrink-0 overflow-hidden shadow-sm">
+          <aside className="w-80 bg-card border border-border rounded-lg flex flex-col shrink-0 overflow-hidden shadow-sm">
             {/* Search & Sort Controls */}
-            <div className="p-3 space-y-2 border-b border-[#2A2B2C]">
+            <div className="p-3 space-y-2 border-b border-border">
               <div className="relative">
-                <Search className="w-4 h-4 text-[#8C8C8C] absolute left-2.5 top-2" />
+                <Search className="w-4 h-4 text-muted-foreground absolute left-2.5 top-2" />
                 <input
+                  ref={searchInputRef}
                   type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search repos or notes..."
-                className="w-full bg-[#121314] text-xs text-[#ededed] pl-8 pr-3 py-1.5 rounded border border-[#2A2B2C] focus:outline-none focus:border-[#3994BC]"
-              />
-            </div>
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search repos or notes..."
+                  className="w-full bg-background text-xs text-card-foreground pl-8 pr-12 py-1.5 rounded border border-border focus:outline-none focus:border-[#3994BC]"
+                />
+                <kbd className="absolute right-2 top-2 text-[10px] bg-secondary text-muted-foreground px-1.5 py-0.5 rounded border border-border select-none pointer-events-none">
+                  Ctrl+K
+                </kbd>
+              </div>
 
             <div className="flex items-center justify-between gap-2">
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
-                className="bg-[#121314] text-xs text-[#bfbfbf] px-2 py-1 rounded border border-[#2A2B2C] flex-1 focus:outline-none"
+                className="bg-background text-xs text-foreground px-2 py-1 rounded border border-border flex-1 focus:outline-none"
               >
                 <option value="name-asc">Sort: Name (A–Z)</option>
                 <option value="selected-first">Sort: Selected First ☑</option>
@@ -802,13 +916,15 @@ export default function App() {
 
             {/* Tag Filter Pills */}
             {allTags.length > 0 && (
-              <div className="flex items-center gap-1 overflow-x-auto pt-1 pb-0.5">
+              <div role="radiogroup" aria-label="Filter repositories by tag" className="flex items-center gap-1 overflow-x-auto pt-1 pb-0.5">
                 <button
+                  role="radio"
+                  aria-checked={selectedTag === "ALL"}
                   onClick={() => setSelectedTag("ALL")}
                   className={`text-[11px] px-2 py-0.5 rounded-full shrink-0 transition ${
                     selectedTag === "ALL"
-                      ? "bg-[#297AA0] text-white"
-                      : "bg-[#121314] text-[#8C8C8C] hover:text-[#ededed]"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-background text-muted-foreground hover:text-card-foreground"
                   }`}
                 >
                   All
@@ -816,11 +932,13 @@ export default function App() {
                 {allTags.map((tag) => (
                   <button
                     key={tag}
+                    role="radio"
+                    aria-checked={selectedTag === tag}
                     onClick={() => setSelectedTag(tag)}
                     className={`text-[11px] px-2 py-0.5 rounded-full shrink-0 transition ${
                       selectedTag === tag
-                        ? "bg-[#297AA0] text-white"
-                        : "bg-[#121314] text-[#8C8C8C] hover:text-[#ededed]"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:text-card-foreground"
                     }`}
                   >
                     #{tag}
@@ -830,8 +948,8 @@ export default function App() {
             )}
           </div>
 
-          {/* Repo List */}
-          <div className="flex-1 overflow-y-auto divide-y divide-[#2A2B2C]">
+          {/* Virtualized Repo List */}
+          <div ref={repoListParentRef} className="flex-1 overflow-y-auto">
             {filteredRepos.length === 0 ? (
               <div className="p-6 text-center text-xs text-[#555555]">
                 {repos.length === 0
@@ -839,119 +957,241 @@ export default function App() {
                   : "No repositories match your current search or tag filter."}
               </div>
             ) : (
-              filteredRepos.map((repo) => {
-                const isSelected = repo.name === selectedRepoName;
-                const isChecked = checkedRepos.has(repo.name);
-                const isRunning = runningRepos.has(repo.name);
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const repo = filteredRepos[virtualRow.index];
+                  if (!repo) return null;
+                  const isSelected = repo.name === selectedRepoName;
+                  const isChecked = checkedRepos.has(repo.name);
+                  const isRunning = runningRepos.has(repo.name);
 
-                return (
-                  <div
-                    key={repo.name}
-                    onClick={() => setSelectedRepoName(repo.name)}
-                    className={`px-3 py-2.5 flex items-center justify-between gap-2 cursor-pointer transition border-l-2 ${
-                      isRunning
-                        ? "bg-[#1E3A47]/40 border-l-[#48A0C7] text-white"
-                        : isSelected
-                          ? "bg-[#242526] border-l-[#3994BC] text-white"
-                          : "border-l-transparent hover:bg-white/[0.04]"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <button
-                        onClick={(e) => toggleCheckRepo(repo.name, e)}
-                        onMouseDown={(e) => handleCheckboxMouseDown(repo.name, e)}
-                        onMouseEnter={() => handleCheckboxMouseEnter(repo.name)}
-                        disabled={Boolean(activeOp)}
-                        aria-label={`${isChecked ? "Deselect" : "Select"} repository ${repo.name}`}
-                        title="Click or drag across checkboxes to multi-select"
-                        className="text-[#8C8C8C] hover:text-[#ededed] disabled:opacity-50 shrink-0 p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC]"
-                      >
-                        {isChecked ? (
-                          <CheckSquare className="w-4 h-4 text-[#48A0C7]" />
-                        ) : (
-                          <Square className="w-4 h-4" />
-                        )}
-                      </button>
+                  return (
+                    <div
+                      key={repo.name}
+                      ref={rowVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      className="border-b border-[#2A2B2C]"
+                    >
+                      <ContextMenu>
+                        <ContextMenuTrigger asChild>
+                          <div
+                            onClick={() => setSelectedRepoName(repo.name)}
+                            className={`px-3 py-2.5 flex items-center justify-between gap-2 cursor-pointer transition border-l-2 ${
+                              isRunning
+                                ? "bg-[#1E3A47]/40 border-l-[#48A0C7] text-white"
+                                : isSelected
+                                  ? "bg-[#242526] border-l-[#3994BC] text-white"
+                                  : "border-l-transparent hover:bg-white/[0.04]"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <button
+                                onClick={(e) => toggleCheckRepo(repo.name, e)}
+                                onMouseDown={(e) => handleCheckboxMouseDown(repo.name, e)}
+                                onMouseEnter={() => handleCheckboxMouseEnter(repo.name)}
+                                disabled={Boolean(activeOp)}
+                                aria-label={`${isChecked ? "Deselect" : "Select"} repository ${repo.name}`}
+                                title="Click or drag across checkboxes to multi-select"
+                                className="text-[#8C8C8C] hover:text-[#ededed] disabled:opacity-50 shrink-0 p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#3994BC]"
+                              >
+                                {isChecked ? (
+                                  <CheckSquare className="w-4 h-4 text-[#48A0C7]" />
+                                ) : (
+                                  <Square className="w-4 h-4" />
+                                )}
+                              </button>
 
-                      <div className="truncate">
-                        <div className="text-sm font-medium truncate flex items-center gap-1.5">
-                          <span className="truncate">{repo.name}</span>
+                              <div className="truncate">
+                                <div className="text-sm font-medium truncate flex items-center gap-1.5">
+                                  <span className="truncate">{repo.name}</span>
 
-                          {isRunning ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#1E3A47] text-[#48A0C7] border border-[#3994BC]/60 shrink-0">
-                              <Loader2 className="w-3 h-3 animate-spin text-[#48A0C7]" />
-                              {activeOp === "check" ? "Checking" : "Pulling"}
-                            </span>
-                          ) : (
+                                  {isRunning ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#1E3A47] text-[#48A0C7] border border-[#3994BC]/60 shrink-0">
+                                      <Loader2 className="w-3 h-3 animate-spin text-[#48A0C7]" />
+                                      {activeOp === "check" ? "Checking" : "Pulling"}
+                                    </span>
+                                  ) : (
+                                    <>
+                                      {repo.syncStatus === "update-available" && (
+                                        <span
+                                          className="w-2 h-2 rounded-full bg-blue-400 shrink-0"
+                                          title="Update available on GitHub"
+                                        />
+                                      )}
+                                      {repo.syncStatus === "updated" && (
+                                        <span
+                                          className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"
+                                          title="Recently updated"
+                                        />
+                                      )}
+                                      {repo.syncStatus === "archived-offline" && (
+                                        <ShieldAlert
+                                          className="w-3.5 h-3.5 text-amber-400 shrink-0"
+                                          title="Archived Locally (Protected)"
+                                        />
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+
+                                {repo.tags?.length > 0 && (
+                                  <div className="flex gap-1 mt-0.5 overflow-hidden">
+                                    {repo.tags.map((t) => (
+                                      <span
+                                        key={t}
+                                        className="text-[10px] text-[#48A0C7] bg-[#1E3A47]/60 px-1.5 rounded shrink-0"
+                                      >
+                                        #{t}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={(e) => handleToggleFavorite(repo.name, e)}
+                              className="text-[#8C8C8C] hover:text-amber-400 shrink-0"
+                              title={
+                                repo.isFavorite
+                                  ? "Remove from favorites"
+                                  : "Add to favorites"
+                              }
+                            >
+                              <Star
+                                className={`w-4 h-4 ${
+                                  repo.isFavorite ? "fill-amber-400 text-amber-400" : ""
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </ContextMenuTrigger>
+                        <ContextMenuContent className="w-48 bg-[#191A1B] border-[#2A2B2C] text-[#ededed]">
+                          {repo.isGitRepo && (
                             <>
-                              {repo.syncStatus === "update-available" && (
-                                <span
-                                  className="w-2 h-2 rounded-full bg-blue-400 shrink-0"
-                                  title="Update available on GitHub"
-                                />
-                              )}
-                              {repo.syncStatus === "updated" && (
-                                <span
-                                  className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"
-                                  title="Recently updated"
-                                />
-                              )}
-                              {repo.syncStatus === "archived-offline" && (
-                                <ShieldAlert
-                                  className="w-3.5 h-3.5 text-amber-400 shrink-0"
-                                  title="Archived Locally (Protected)"
-                                />
-                              )}
+                              <ContextMenuItem
+                                disabled={Boolean(activeOp)}
+                                onClick={() => runBatchOperation([repo], 'check')}
+                                className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                              >
+                                <ArrowUpCircle className="w-3.5 h-3.5 mr-2 text-[#48A0C7]" />
+                                Check for updates
+                              </ContextMenuItem>
+                              <ContextMenuItem
+                                disabled={Boolean(activeOp)}
+                                onClick={() => runBatchOperation([repo], 'pull')}
+                                className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5 mr-2 text-emerald-400" />
+                                Pull latest changes
+                              </ContextMenuItem>
+                              <ContextMenuSeparator className="bg-[#2A2B2C]" />
                             </>
                           )}
-                        </div>
-
-                        {repo.tags?.length > 0 && (
-                          <div className="flex gap-1 mt-0.5 overflow-hidden">
-                            {repo.tags.map((t) => (
-                              <span
-                                key={t}
-                                className="text-[10px] text-[#48A0C7] bg-[#1E3A47]/60 px-1.5 rounded shrink-0"
-                              >
-                                #{t}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                          <ContextMenuItem
+                            onClick={() => window.api.openInExplorer(repo.path)}
+                            className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 mr-2 text-[#8C8C8C]" />
+                            Open in Explorer
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            onClick={() => window.api.openInVSCode(repo.path)}
+                            className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                          >
+                            <Code2 className="w-3.5 h-3.5 mr-2 text-[#48A0C7]" />
+                            Open in VS Code
+                          </ContextMenuItem>
+                          {repo.remoteUrl && repo.remoteUrl.startsWith('http') && (
+                            <ContextMenuItem
+                              onClick={() => {
+                                const cleanUrl = repo.remoteUrl.replace(/\.git$/, '');
+                                window.open(cleanUrl, '_blank');
+                              }}
+                              className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5 mr-2 text-[#48A0C7]" />
+                              Open on GitHub
+                            </ContextMenuItem>
+                          )}
+                          <ContextMenuSeparator className="bg-[#2A2B2C]" />
+                          <ContextMenuItem
+                            disabled={Boolean(activeOp)}
+                            onClick={() => handleDeleteRepo(repo)}
+                            className="cursor-pointer text-xs text-red-400 focus:bg-red-950/60 focus:text-red-300"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-2 text-red-400" />
+                            Move to Trash
+                          </ContextMenuItem>
+                        </ContextMenuContent>
+                      </ContextMenu>
                     </div>
-
-                    <button
-                      onClick={(e) => handleToggleFavorite(repo.name, e)}
-                      className="text-[#8C8C8C] hover:text-amber-400 shrink-0"
-                      title={
-                        repo.isFavorite
-                          ? "Remove from favorites"
-                          : "Add to favorites"
-                      }
-                    >
-                      <Star
-                        className={`w-4 h-4 ${
-                          repo.isFavorite ? "fill-amber-400 text-amber-400" : ""
-                        }`}
-                      />
-                    </button>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </div>
             )}
           </div>
         </aside>
 
         {/* RIGHT CONTENT AREA: Rounded Island Panel */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-[#121314] rounded-lg border border-[#2A2B2C] shadow-sm">
+        <main className="flex-1 flex flex-col overflow-hidden bg-background rounded-lg border border-border shadow-sm">
+          {/* Dismissible Error / Warning Banner */}
+          {activeAlert && (
+            <div
+              role="alert"
+              className={`px-4 py-2.5 border-b flex items-center justify-between gap-3 text-xs shrink-0 animate-in fade-in duration-150 ${
+                activeAlert.type === 'error'
+                  ? 'bg-red-950/70 border-red-800/80 text-red-200'
+                  : activeAlert.type === 'warn'
+                  ? 'bg-amber-950/70 border-amber-800/80 text-amber-200'
+                  : 'bg-[#1E3A47] border-[#3994BC]/60 text-card-foreground'
+              }`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <AlertTriangle
+                  className={`w-4 h-4 shrink-0 ${
+                    activeAlert.type === 'error'
+                      ? 'text-red-400'
+                      : activeAlert.type === 'warn'
+                      ? 'text-amber-400'
+                      : 'text-[#48A0C7]'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <span className="font-semibold mr-1.5">{activeAlert.title}:</span>
+                  <span className="opacity-90">{activeAlert.message}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveAlert(null)}
+                className="p-1 rounded hover:bg-white/[0.1] text-inherit opacity-70 hover:opacity-100 transition shrink-0"
+                aria-label="Dismiss alert"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {selectedRepo ? (
             <>
               {/* Repo Header */}
-              <div className="p-4 bg-[#191A1B] border-b border-[#2A2B2C] flex flex-wrap items-center justify-between gap-4">
+              <div className="p-4 bg-card border-b border-border flex flex-wrap items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-3 flex-wrap">
-                    <h1 className="text-xl font-bold text-[#ededed] truncate">
+                    <h1 className="text-xl font-bold text-card-foreground truncate">
                       {selectedRepo.name}
                     </h1>
                     {renderStatusBadge(
@@ -959,7 +1199,7 @@ export default function App() {
                       runningRepos.has(selectedRepo.name)
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-xs text-[#8C8C8C] flex-wrap">
+                  <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground flex-wrap">
                     <span className="select-text truncate max-w-xl">
                       {selectedRepo.remoteUrl}
                     </span>
@@ -973,13 +1213,13 @@ export default function App() {
 
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* View Mode Switcher: README vs Files vs History */}
-                  <div className="flex items-center bg-[#121314] p-0.5 rounded border border-[#2A2B2C] mr-1">
+                  <div className="flex items-center bg-background p-0.5 rounded border border-border mr-1">
                     <button
                       onClick={() => setActiveTab('readme')}
                       className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition ${
                         activeTab === 'readme'
-                          ? 'bg-[#297AA0] text-white'
-                          : 'text-[#8C8C8C] hover:text-[#ededed]'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-card-foreground'
                       }`}
                     >
                       <BookOpen className="w-3.5 h-3.5" /> README
@@ -988,8 +1228,8 @@ export default function App() {
                       onClick={() => setActiveTab('files')}
                       className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition ${
                         activeTab === 'files'
-                          ? 'bg-[#297AA0] text-white'
-                          : 'text-[#8C8C8C] hover:text-[#ededed]'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-card-foreground'
                       }`}
                     >
                       <FolderTree className="w-3.5 h-3.5" /> Files
@@ -998,8 +1238,8 @@ export default function App() {
                       onClick={() => setActiveTab('history')}
                       className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition ${
                         activeTab === 'history'
-                          ? 'bg-[#297AA0] text-white'
-                          : 'text-[#8C8C8C] hover:text-[#ededed]'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-card-foreground'
                       }`}
                     >
                       <History className="w-3.5 h-3.5" />
@@ -1009,7 +1249,7 @@ export default function App() {
                           className={`text-[10px] px-1.5 rounded-full ${
                             activeTab === 'history'
                               ? 'bg-[#1E3A47] text-[#48A0C7]'
-                              : 'bg-[#242526] text-[#8C8C8C]'
+                              : 'bg-secondary text-muted-foreground'
                           }`}
                         >
                           {selectedRepo.history.length}
@@ -1018,101 +1258,134 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Single Repo Action Buttons */}
+                  {/* Primary Repo Actions (Check + Pull) */}
                   {selectedRepo.isGitRepo && (
-                    <>
-                      <button
-                        onClick={() => runBatchOperation([selectedRepo], 'check')}
-                        disabled={Boolean(activeOp)}
-                        className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] disabled:opacity-50 text-[#ededed] px-3 py-1.5 rounded border border-[#2A2B2C] transition"
-                        title="Check if remote has new commits without pulling"
-                      >
-                        {runningRepos.has(selectedRepo.name) && activeOp === 'check' ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#48A0C7]" />
-                            Checking...
-                          </>
-                        ) : (
-                          <>
-                            <ArrowUpCircle className="w-3.5 h-3.5 text-[#48A0C7]" />
-                            Check
-                          </>
-                        )}
-                      </button>
+                    <div className="flex items-center gap-1.5">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => runBatchOperation([selectedRepo], 'check')}
+                            disabled={Boolean(activeOp)}
+                            className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] disabled:opacity-50 text-[#ededed] px-2.5 py-1.5 rounded border border-[#2A2B2C] transition"
+                          >
+                            {runningRepos.has(selectedRepo.name) && activeOp === 'check' ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#48A0C7]" />
+                                Checking...
+                              </>
+                            ) : (
+                              <>
+                                <ArrowUpCircle className="w-3.5 h-3.5 text-[#48A0C7]" />
+                                Check
+                              </>
+                            )}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Check if remote has new commits without pulling</TooltipContent>
+                      </Tooltip>
 
-                      <button
-                        onClick={() => runBatchOperation([selectedRepo], 'pull')}
-                        disabled={Boolean(activeOp)}
-                        className="flex items-center gap-1.5 text-xs bg-[#297AA0] hover:bg-[#2B7DA3] disabled:opacity-50 text-white px-3 py-1.5 rounded transition"
-                      >
-                        {runningRepos.has(selectedRepo.name) && activeOp === 'pull' ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Pulling...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            Pull Latest
-                          </>
-                        )}
-                      </button>
-                    </>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => runBatchOperation([selectedRepo], 'pull')}
+                            disabled={Boolean(activeOp)}
+                            className="flex items-center gap-1.5 text-xs bg-[#297AA0] hover:bg-[#2B7DA3] disabled:opacity-50 text-white px-3 py-1.5 rounded font-medium transition shadow-sm"
+                          >
+                            {runningRepos.has(selectedRepo.name) && activeOp === 'pull' ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Pulling...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                Pull Latest
+                              </>
+                            )}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Pull latest commits into local folder</TooltipContent>
+                      </Tooltip>
+                    </div>
                   )}
 
-                  <button
-                    onClick={() => setShowNotesPanel(!showNotesPanel)}
-                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition ${
-                      showNotesPanel
-                        ? 'bg-[#1E3A47] border-[#3994BC] text-[#48A0C7]'
-                        : 'bg-[#242526] border-[#2A2B2C] hover:bg-[#333536] text-[#bfbfbf]'
-                    }`}
-                  >
-                    <StickyNote className="w-3.5 h-3.5" />
-                    Notes & Tags
-                  </button>
-
-                  <button
-                    onClick={() => window.api.openInExplorer(selectedRepo.path)}
-                    className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] text-[#ededed] px-3 py-1.5 rounded border border-[#2A2B2C] transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    Explorer
-                  </button>
-
-                  {/* Open in Browser button if repo has an online remote URL */}
-                  {selectedRepo.isGitRepo &&
-                    selectedRepo.remoteUrl &&
-                    selectedRepo.remoteUrl.startsWith('http') && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <button
-                        onClick={() => {
-                          const cleanUrl = selectedRepo.remoteUrl.replace(/\.git$/, '');
-                          window.open(cleanUrl, '_blank');
-                        }}
-                        className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] text-[#ededed] px-3 py-1.5 rounded border border-[#2A2B2C] transition"
-                        title="Open GitHub repo in web browser"
+                        onClick={() => setShowNotesPanel(!showNotesPanel)}
+                        className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border transition ${
+                          showNotesPanel
+                            ? 'bg-[#1E3A47] border-[#3994BC] text-[#48A0C7]'
+                            : 'bg-[#242526] border-[#2A2B2C] hover:bg-[#333536] text-[#bfbfbf]'
+                        }`}
                       >
-                        <ExternalLink className="w-3.5 h-3.5 text-[#48A0C7]" />
-                        GitHub
+                        <StickyNote className="w-3.5 h-3.5" />
+                        <span>Notes</span>
                       </button>
-                    )}
+                    </TooltipTrigger>
+                    <TooltipContent>Toggle private notes and tags editor</TooltipContent>
+                  </Tooltip>
 
-                  <button
-                    onClick={() => window.api.openInVSCode(selectedRepo.path)}
-                    className="flex items-center gap-1.5 text-xs bg-[#242526] hover:bg-[#333536] text-[#ededed] px-3 py-1.5 rounded border border-[#2A2B2C] transition"
-                  >
-                    <Code2 className="w-3.5 h-3.5 text-[#48A0C7]" />
-                    VS Code
-                  </button>
+                  {/* Secondary Actions Collapsed Into Dropdown */}
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            className="flex items-center gap-1 text-xs bg-[#242526] hover:bg-[#333536] text-[#ededed] px-2.5 py-1.5 rounded border border-[#2A2B2C] transition"
+                            aria-label="More repository actions"
+                          >
+                            <span>Actions</span>
+                            <ChevronDown className="w-3.5 h-3.5 text-[#8C8C8C]" />
+                          </button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent>Open in external tools, browse, or delete</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent align="end" className="w-48 bg-[#191A1B] border-[#2A2B2C] text-[#ededed]">
+                      <DropdownMenuItem
+                        onClick={() => window.api.openInExplorer(selectedRepo.path)}
+                        className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 mr-2 text-[#8C8C8C]" />
+                        Open in Explorer
+                      </DropdownMenuItem>
 
-                  <button
-                    onClick={() => handleDeleteRepo(selectedRepo)}
-                    disabled={Boolean(activeOp)}
-                    className="flex items-center gap-1.5 text-xs bg-red-950/50 hover:bg-red-900/70 disabled:opacity-50 text-red-300 px-2.5 py-1.5 rounded border border-red-800/60 transition"
-                    title="Move to Windows Recycle Bin"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                      <DropdownMenuItem
+                        onClick={() => window.api.openInVSCode(selectedRepo.path)}
+                        className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                      >
+                        <Code2 className="w-3.5 h-3.5 mr-2 text-[#48A0C7]" />
+                        Open in VS Code
+                      </DropdownMenuItem>
+
+                      {selectedRepo.isGitRepo &&
+                        selectedRepo.remoteUrl &&
+                        selectedRepo.remoteUrl.startsWith('http') && (
+                          <DropdownMenuItem
+                            onClick={() => {
+                              const cleanUrl = selectedRepo.remoteUrl.replace(/\.git$/, '');
+                              window.open(cleanUrl, '_blank');
+                            }}
+                            className="cursor-pointer text-xs focus:bg-[#242526] focus:text-white"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 mr-2 text-[#48A0C7]" />
+                            Open on GitHub
+                          </DropdownMenuItem>
+                        )}
+
+                      <DropdownMenuSeparator className="bg-[#2A2B2C]" />
+
+                      <DropdownMenuItem
+                        disabled={Boolean(activeOp)}
+                        onClick={() => handleDeleteRepo(selectedRepo)}
+                        className="cursor-pointer text-xs text-red-400 focus:bg-red-950/60 focus:text-red-300"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 mr-2 text-red-400" />
+                        Move to Trash
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
 
@@ -1187,7 +1460,7 @@ export default function App() {
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-zinc-500 text-sm">
-              Select a repository on the left or choose your OSSGitHub folder to begin.
+              Select a repository on the left or choose your root folder to begin.
             </div>
           )}
         </main>
@@ -1238,59 +1511,89 @@ export default function App() {
 
     {/* BOTTOM STATUS & LIVE PROGRESS BAR */}
     <footer
-        className={`h-8 text-[#ededed] text-xs px-4 flex items-center justify-between gap-4 shrink-0 transition-colors ${
-          activeOp === "pull"
-            ? "bg-emerald-700"
-            : activeOp === "check" || activeOp === "clone"
-              ? "bg-[#297AA0]"
-              : "bg-[#191A1B] border-t border-[#2A2B2C]"
-        }`}
-      >
-        {/* Left: Live Spinner / Ready Icon + Latest Status Message */}
-        <div className="flex items-center gap-2 min-w-0">
-          {activeOp ? (
-            <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin text-[#48A0C7]" />
-          ) : (
-            <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[#48A0C7]" />
-          )}
-          <span className="truncate">
-            {batchProgress
-              ? `${batchProgress.log} (${batchProgress.current}/${batchProgress.total})`
-              : "Ready — Local repositories protected"}
+      className={`h-8 text-card-foreground text-xs px-4 flex items-center justify-between gap-4 shrink-0 transition-colors ${
+        activeOp === "pull"
+          ? "bg-emerald-700"
+          : activeOp === "check" || activeOp === "clone"
+            ? "bg-primary"
+            : "bg-card border-t border-border"
+      }`}
+    >
+      {/* Left: Live Spinner / Ready Icon + Latest Status Message */}
+      <div className="flex items-center gap-2 min-w-0">
+        {activeOp ? (
+          <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin text-[#48A0C7]" />
+        ) : (
+          <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[#48A0C7]" />
+        )}
+        <span className="truncate">
+          {batchProgress
+            ? `${batchProgress.log} (${batchProgress.current}/${batchProgress.total})`
+            : "Ready — Local repositories protected"}
+        </span>
+        {activeOp && runningRepos.size > 0 && (
+          <span className="text-[10px] bg-black/40 px-2 py-0.5 rounded-full shrink-0 text-[#48A0C7] border border-[#3994BC]/30">
+            {runningRepos.size} active
           </span>
-          {activeOp && runningRepos.size > 0 && (
-            <span className="text-[10px] bg-black/40 px-2 py-0.5 rounded-full shrink-0 text-[#48A0C7] border border-[#3994BC]/30">
-              {runningRepos.size} active
-            </span>
-          )}
-        </div>
+        )}
+      </div>
 
-        {/* Right: Batch Info + Quick Show/Hide Sync Terminal Toggle */}
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="hidden sm:inline text-[11px] text-[#8C8C8C]">
-            Parallel Batch: 5 repos | Cooldown: 1.5s
-          </span>
+      {/* Right: Batch Info + Quick Show/Hide Sync Terminal Toggle */}
+      <div className="flex items-center gap-3 shrink-0">
+        <span className="hidden sm:inline text-[11px] text-muted-foreground">
+          Parallel Batch: 5 repos | Cooldown: 1.5s
+        </span>
 
-          <button
-            onClick={() => setShowTerminal((prev) => !prev)}
-            className="flex items-center gap-1.5 text-[11px] font-medium bg-[#242526] hover:bg-[#333536] text-[#ededed] border border-[#2A2B2C] px-2.5 py-0.5 rounded transition"
-            title={showTerminal ? "Hide Sync Terminal" : "Show Sync Terminal"}
-          >
-            <Terminal className="w-3 h-3 text-[#48A0C7]" />
-            <span>{showTerminal ? "Hide Terminal" : "Show Terminal"}</span>
-            {terminalLogs.length > 0 && (
-              <span className="text-[10px] bg-[#121314] px-1.5 rounded-full text-[#8C8C8C]">
-                {terminalLogs.length}
-              </span>
-            )}
-            {showTerminal ? (
-              <ChevronDown className="w-3 h-3 text-[#8C8C8C]" />
-            ) : (
-              <ChevronUp className="w-3 h-3 text-[#8C8C8C]" />
-            )}
-          </button>
-        </div>
-      </footer>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => setShowTerminal((prev) => !prev)}
+              className="flex items-center gap-1.5 text-[11px] font-medium bg-secondary hover:bg-[#333536] text-card-foreground border border-border px-2.5 py-0.5 rounded transition"
+            >
+              <Terminal className="w-3 h-3 text-[#48A0C7]" />
+              <span>{showTerminal ? "Hide Terminal" : "Show Terminal"}</span>
+              {terminalLogs.length > 0 && (
+                <span className="text-[10px] bg-background px-1.5 rounded-full text-muted-foreground">
+                  {terminalLogs.length}
+                </span>
+              )}
+              {showTerminal ? (
+                <ChevronDown className="w-3 h-3 text-muted-foreground" />
+              ) : (
+                <ChevronUp className="w-3 h-3 text-muted-foreground" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{showTerminal ? "Hide sync and terminal drawer (Ctrl+`)" : "Show sync and terminal drawer (Ctrl+`)"}</TooltipContent>
+        </Tooltip>
+      </div>
+    </footer>
+
+      {/* Modern Shadcn Confirm Delete Dialog */}
+      <AlertDialog open={Boolean(repoToDelete)} onOpenChange={(open) => !open && setRepoToDelete(null)}>
+        <AlertDialogContent className="bg-[#191A1B] border-[#2A2B2C] text-[#ededed] max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-[#ededed] flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-red-400" />
+              Move Repository to Trash?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-[#8C8C8C] text-xs leading-relaxed">
+              Are you sure you want to move <span className="font-semibold text-[#ededed]">{repoToDelete?.name}</span> to the Windows Recycle Bin? You can restore it from the Recycle Bin anytime.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="mt-4 gap-2">
+            <AlertDialogCancel className="bg-[#242526] text-[#ededed] border-[#2A2B2C] hover:bg-[#333536] hover:text-white text-xs h-8">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDeleteRepo}
+              className="bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800/60 text-xs h-8"
+            >
+              Move to Trash
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
     </div>
   );
